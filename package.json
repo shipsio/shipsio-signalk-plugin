@@ -1,0 +1,23 @@
+{
+  "name": "shipsio-signalk-plugin",
+  "version": "1.0.2",
+  "description": "ShipsIO SignalK plugin for AIS Exchange",
+  "main": "index.js",
+  "signalk-plugin-enabled-by-default": false,
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "ShipsIO Team",
+  "repository": "https://github.com/shipsio/shipsio-signalk-plugin",
+  "license": "ISC",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-ais"
+  ],
+  "files": [
+    "screenshots/*"
+  ],
+  "dependencies": {
+    "request": "2.88.2"
+  }
+}
