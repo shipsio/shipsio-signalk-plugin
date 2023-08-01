@@ -3,6 +3,7 @@ const request = require('request');
 
 const SHIPSIO_HOST = 'shipsio.com';
 const SHIPSIO_PORT = '443';
+const SHIPSIO_HTTP = https;
 
 const SIGNALK_HOST = 'localhost';
 const SIGNALK_PORT = '3000';
@@ -359,8 +360,12 @@ module.exports = function (app) {
 		return new Promise((resolve, reject) => {
 
 			try {
-				var post_data = JSON.stringify(data);
-				var datalength = Buffer.byteLength(post_data);
+				const post_data = JSON.stringify(data);
+				const datalength = Buffer.byteLength(post_data);
+
+				const maxFileSize = 1024 * 1024 * 1; // 1 MB
+				let contentBuffer = '';
+				let totalBytesInBuffer = 0;
 
 				debug('Size to post: ' + datalength);
 
@@ -377,18 +382,38 @@ module.exports = function (app) {
 				};
 
 				// Set up the request
-				var post_req = https.request(post_options, function (res) {
+				var post_req = SHIPSIO_HTTP.request(post_options, function (res) {
 					res.setEncoding('utf8');
-					res.on('data', function (chunk) {
-						if (chunk.startsWith('{"Posted":')) {
-							var cunklength = Buffer.byteLength(chunk);
-							debug('Size returned: ' + cunklength);
+					res.on('data', function (data) {
+						contentBuffer += data;
+						totalBytesInBuffer += data.length;
 
+						// Look to see if the file size is too large.
+						if (totalBytesInBuffer > maxFileSize) {
+							res.pause();
+
+							res.header('Connection', 'close');
+							res.status(413).json({error: `The file size exceeded the limit of ${maxFileSize} bytes`});
+
+							res.connection.destroy();
+						}
+
+					});
+					res.on('end', function () {
+						try {
+							debug('Bytes returned: ' + totalBytesInBuffer);
+							// contentBuffer = Buffer.concat(contentBuffer, totalBytesInBuffer).toString();
+							if (contentBuffer.startsWith('{"Posted":')) {
 							debug("Successfully posted to ShipsIO:");
-							resolve(chunk);
+								const json = JSON.parse(contentBuffer);
+								resolve(json);
 						} else {
-							logError('Failed to post to ShipsIO: ' + chunk);
-							reject(new Error(chunk));
+								logError('Failed to post to ShipsIO: ' + contentBuffer);
+								reject(new Error(contentBuffer));
+							}
+						}
+						catch (e) {
+							reject(e);
 						}
 					});
 					res.on('error', function (e) {
@@ -401,7 +426,6 @@ module.exports = function (app) {
 						logError(e);
 						reject(new Error('aborted'));
 					});
-
 				});
 
 				// post the data
@@ -417,7 +441,7 @@ module.exports = function (app) {
 	plugin.postToShipsIO = async (data) => {
 		try {
 			let result = await plugin.postData("/public/ais/signalk", data);
-			return JSON.parse(result);
+			return result;
 		}
 		catch (e) {
 			logError(e);
