@@ -1,4 +1,5 @@
-var https = require('https');
+const http = require('http');
+const https = require('https');
 const request = require('request');
 
 const SHIPSIO_HOST = 'shipsio.com';
@@ -107,11 +108,13 @@ module.exports = function (app) {
 		})
 	}
 
+	plugin.vesselDict = {};
+
 	plugin.fetchVessels = function (url) {
 		plugin.downloadJSON(url)
 			.then(async result => {
 				let vessels = [];
-				for (var property in result) {
+				for (const property in result) {
 					try {
 						if (result.hasOwnProperty(property)) {
 							// debug(property);
@@ -164,6 +167,20 @@ module.exports = function (app) {
 							}
 							// debug(vessel);
 							if (vessel.MMSI) {
+								//Before posting, check against vesselDict
+								if (plugin.vesselDict[vessel.MMSI]) {
+									//We've posted this before, let's strip any data that hasn't changed
+									const previuslyPostedVessel = plugin.vesselDict[vessel.MMSI];
+									// debug(previuslyPostedVessel);
+									for (const property in previuslyPostedVessel) {
+										if (property !== 'MMSI') {
+											if (vessel[property] === previuslyPostedVessel[property]) {
+												//Delete data that is same as previously sent, to minimize data transfer
+												delete vessel[property];
+											}
+										}
+									}
+								}
 								vessels.push(vessel);
 							}
 						}
@@ -184,21 +201,20 @@ module.exports = function (app) {
 					const result = await plugin.postToShipsIO(data);
 					if (result) {
 						debug('Vessels posted to ShipsIO: ' + result.Posted);
+						//Make sure all posted vessels are in vessel dictionary
+						for (const index in vessels) {
+							const postedVessel = vessels[index];
+							if (!plugin.vesselDict[postedVessel.MMSI]) {
+								plugin.vesselDict[postedVessel.MMSI] = postedVessel;
+							}
+						}
 						if (result.vessels) {
 							debug('Vessels returned from ShipsIO: ' + result.vessels.length);
 							let missingVessels = [];
 							for (let i=0; i<result.vessels.length; i++) {
 								let newVessel = result.vessels[i];
-								let matchingVessel = null;
-								for (let j=0;j<vessels.length; j++) {
-									let existingVessel = vessels[j];
-									if (newVessel.MMSI === existingVessel.MMSI) {
-										//Match
-										matchingVessel = existingVessel;
-										break;
-									}
-								}
-								if (!matchingVessel) {
+								if (!plugin.vesselDict[newVessel.MMSI]) {
+									//New vessel, not posted to ShipsIO
 									missingVessels.push(newVessel);
 								}
 							}
@@ -332,9 +348,11 @@ module.exports = function (app) {
 			if (options.interval < 120) {
 				options.interval = 120;
 			}
-			debug('Interval!: ' + options.interval);
+			debug('Interval: ' + options.interval);
+			debug('Key: ' + options.key);
 			plugin.options = options;
 			let url = `http://${SIGNALK_HOST}:${SIGNALK_PORT}/signalk/v1/api/vessels`;
+			debug('Url: ' + url);
 
 			plugin.intervalId = setInterval( () => {
 				try {
@@ -383,6 +401,8 @@ module.exports = function (app) {
 
 				// Set up the request
 				var post_req = SHIPSIO_HTTP.request(post_options, function (res) {
+					// debug(`STATUS: ${res.statusCode}`);
+					// debug(`HEADERS: ${JSON.stringify(res.headers)}`);
 					res.setEncoding('utf8');
 					res.on('data', function (data) {
 						contentBuffer += data;
@@ -426,6 +446,11 @@ module.exports = function (app) {
 						logError(e);
 						reject(new Error('aborted'));
 					});
+				});
+
+				post_req.on('error', (e) => {
+					logError(`Problem with request: ${e.message}`);
+					reject(e);
 				});
 
 				// post the data
