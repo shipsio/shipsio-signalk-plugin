@@ -1,6 +1,6 @@
 {
   "name": "shipsio-signalk-plugin",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "ShipsIO SignalK plugin for AIS Exchange",
   "main": "index.js",
   "signalk-plugin-enabled-by-default": false,
