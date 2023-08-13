@@ -10,6 +10,11 @@ const SIGNALK_HOST = 'localhost';
 const SIGNALK_PORT = '3000';
 
 module.exports = function (app) {
+	const showError =
+		app.showerror || app.error ||
+		(err => {
+			console.error(err)
+		})
 	const logError =
 		app.error ||
 		(err => {
@@ -21,7 +26,7 @@ module.exports = function (app) {
 			console.log(msg)
 		})
 
-	var plugin = {
+	const plugin = {
 		unsubscribes: []
 	}
 
@@ -35,8 +40,8 @@ module.exports = function (app) {
 		properties: {
 			interval: {
 				type: 'number',
-				title: 'Interval between AIS reports (120 seconds is default and minimum)',
-				default: 120
+				title: 'Interval between AIS reports (600 seconds is default and 120 seconds is minimum)',
+				default: 600    //Every 10 mins
 			},
 			key: {
 				type: 'string',
@@ -58,6 +63,7 @@ module.exports = function (app) {
 				let contentBuffer = [];
 				let totalBytesInBuffer = 0;
 
+				debug('Fetching local AIS vessels: ' + src)
 				const req = request(src, {
 					method: "GET",
 					headers: {
@@ -95,8 +101,13 @@ module.exports = function (app) {
 
 				req.on('end', function () {
 					contentBuffer = Buffer.concat(contentBuffer, totalBytesInBuffer).toString();
-					const json = JSON.parse(contentBuffer);
-					resolve(json);
+					if (req.response && (req.response.statusCode === 200)) {
+						const json = JSON.parse(contentBuffer);
+						resolve(json);
+					}
+					else {
+						reject(contentBuffer);
+					}
 				});
 
 				req.on('error', function (error) {
@@ -109,15 +120,18 @@ module.exports = function (app) {
 	}
 
 	plugin.vesselDict = {};
+	plugin.isValidKey = true;   //Assume valid until otherwise proven
 
 	plugin.fetchVessels = function (url) {
 		plugin.downloadJSON(url)
 			.then(async result => {
 				let vessels = [];
+				let resultCount = 0;
 				for (const property in result) {
 					try {
 						if (result.hasOwnProperty(property)) {
 							// debug(property);
+							resultCount++;
 							let vesselRaw = result[property];
 							let vessel = {};
 							if (vesselRaw.mmsi) {
@@ -165,6 +179,31 @@ module.exports = function (app) {
 							if (vesselRaw.registrations && vesselRaw.registrations.imo && vesselRaw.registrations.imo.startsWith('IMO ')) {
 								vessel.IMO = vesselRaw.registrations.imo.replace('IMO ', '');
 							}
+							if (vesselRaw.Name) {
+								vessel.Name = vesselRaw.Name;
+							}
+							if (vesselRaw.Lat) {
+								vessel.Lat = vesselRaw.Lat;
+							}
+							if (vesselRaw.Lon) {
+								vessel.Lon = vesselRaw.Lon;
+							}
+							if (vesselRaw.Speed) {
+								vessel.Speed = vesselRaw.Speed;
+							}
+							if (vesselRaw.Course) {
+								vessel.Course = vesselRaw.Course;
+							}
+							if (vesselRaw.Heading) {
+								vessel.Heading = vesselRaw.Heading;
+							}
+							if (vesselRaw.callsign) {
+								vessel.Callsign = vesselRaw.callsign;
+							}
+							if (vesselRaw.Modified) {
+								vessel.Modified = vesselRaw.Modified;
+							}
+
 							// debug(vessel);
 							if (vessel.MMSI) {
 								//Before posting, check against vesselDict
@@ -181,7 +220,12 @@ module.exports = function (app) {
 										}
 									}
 								}
-								vessels.push(vessel);
+								if (!vessel.IsNetAIS) {
+									vessels.push(vessel);
+								}
+								else {
+									console.debug('Skipped NetAIS vessel: ' + vessel.MMSI);
+								}
 							}
 						}
 					}
@@ -189,6 +233,7 @@ module.exports = function (app) {
 						logError(e);
 					}
 				}
+				debug(resultCount + " local AIS vessels fetched");
 				if (vessels.length > 0) {
 					//Post all vessels along with a authorization key (optional) and position (optional)
 					const data = {
@@ -198,6 +243,7 @@ module.exports = function (app) {
 						Lon: vessels[0].Lon,
 						Vessels: vessels
 					}
+					debug("Posting "+vessels.length+" vessels to ShipsIO");
 					const result = await plugin.postToShipsIO(data);
 					if (result) {
 						debug('Vessels posted to ShipsIO: ' + result.Posted);
@@ -327,7 +373,7 @@ module.exports = function (app) {
 
 	plugin.handleNewVessel = function (vessel) {
 		if (vessel.MMSI && vessel.Modified) {
-			debug('Handling new vessel:' + vessel.Name);
+			debug('Handling NET AIS vessel:' + vessel.Name);
 			let values = plugin.prepareValues(vessel);
 			app.handleMessage(plugin.id, {
 				context: 'vessels.urn:mrn:imo:mmsi:' + vessel.MMSI,
@@ -344,8 +390,8 @@ module.exports = function (app) {
 
 	plugin.start = function (options) {
 		try {
-			debug('Starting ShipsIO plugin')
-			if (options.interval < 120) {
+			debug('Starting ShipsIO plugin');
+			if (!options.interval || (options.interval < 120)) {
 				options.interval = 120;
 			}
 			debug('Interval: ' + options.interval);
@@ -354,19 +400,26 @@ module.exports = function (app) {
 			let url = `http://${SIGNALK_HOST}:${SIGNALK_PORT}/signalk/v1/api/vessels`;
 			debug('Url: ' + url);
 
-			plugin.intervalId = setInterval( () => {
-				try {
-					plugin.fetchVessels(url);
-				}
-				catch (e) {
-					logError(e);
-				}
-			}, options.interval * 1000);
-			try {
-				plugin.fetchVessels(url);
+			if (!options.key || (options.key.length < 1)) {
+				logError('Missing setting: key');
 			}
-			catch (e) {
-				logError(e);
+			else {
+				//Setup an interval to perform fetchVessels (does not fire right away)
+				plugin.intervalId = setInterval(() => {
+					try {
+						plugin.fetchVessels(url);
+					} catch (e) {
+						logError(e);
+					}
+				}, options.interval * 1000);
+				//Defer first fetchVessels, to let NMEA get some data first
+				plugin.intervalId = setTimeout(() => {
+					try {
+						plugin.fetchVessels(url);
+					} catch (e) {
+						logError(e);
+					}
+				}, 30000)
 			}
 		}
 		catch (e) {
@@ -388,7 +441,7 @@ module.exports = function (app) {
 				debug('Size to post: ' + datalength);
 
 				// An object of options to indicate where to post to
-				var post_options = {
+				const post_options = {
 					host: SHIPSIO_HOST,
 					port: SHIPSIO_PORT,
 					path: url,
@@ -400,7 +453,7 @@ module.exports = function (app) {
 				};
 
 				// Set up the request
-				var post_req = SHIPSIO_HTTP.request(post_options, function (res) {
+				const post_req = SHIPSIO_HTTP.request(post_options, function (res) {
 					// debug(`STATUS: ${res.statusCode}`);
 					// debug(`HEADERS: ${JSON.stringify(res.headers)}`);
 					res.setEncoding('utf8');
@@ -424,15 +477,21 @@ module.exports = function (app) {
 							debug('Bytes returned: ' + totalBytesInBuffer);
 							// contentBuffer = Buffer.concat(contentBuffer, totalBytesInBuffer).toString();
 							if (contentBuffer.startsWith('{"Posted":')) {
-							debug("Successfully posted to ShipsIO:");
+								debug("Successfully posted to ShipsIO:");
 								const json = JSON.parse(contentBuffer);
 								resolve(json);
-						} else {
-								logError('Failed to post to ShipsIO: ' + contentBuffer);
+							} else {
+								if (contentBuffer === "Invalid key") {
+									//See if this is first time
+									if (plugin.isValidKey) {
+										//It's first time, set to false to only send this once
+										plugin.isValidKey = false;
+										showError(new Error('Invalid ShipsIO Key'));
+									}
+								}
 								reject(new Error(contentBuffer));
 							}
-						}
-						catch (e) {
+						} catch (e) {
 							reject(e);
 						}
 					});
