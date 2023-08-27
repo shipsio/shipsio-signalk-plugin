@@ -151,8 +151,13 @@ module.exports = function (app) {
 									vessel.Heading = vesselRaw.navigation.headingTrue.value;
 								}
 							}
-							if (vesselRaw.communication) {
-								vessel.Callsign = vesselRaw.communication.callsignVhf;
+							if (vesselRaw.communication && vesselRaw.communication.callsignVhf) {
+								if (typeof vesselRaw.communication.callsignVhf === 'string' ) {
+									vessel.Callsign = vesselRaw.communication.callsignVhf;
+								}
+								else {
+									console.warn('Unknown callsignVhf type:' + JSON.stringify(vesselRaw.communication.callsignVhf))
+								}
 							}
 							if (vesselRaw.design) {
 								if (vesselRaw.design.length) {
@@ -213,10 +218,18 @@ module.exports = function (app) {
 									// debug(previuslyPostedVessel);
 									for (const property in previuslyPostedVessel) {
 										if (property !== 'MMSI') {
-											if (vessel[property] === previuslyPostedVessel[property]) {
-												//Delete data that is same as previously sent, to minimize data transfer
+											if ((vessel[property] === undefined) || vessel[property] === previuslyPostedVessel[property]) {
+												//Delete data that is same as previously sent or is undefined, to minimize data transfer
 												delete vessel[property];
 											}
+										}
+									}
+								}
+								for (const property in vessel) {
+									if (property !== 'MMSI') {
+										if (vessel[property] === undefined) {
+											//Delete undefined data
+											delete vessel[property];
 										}
 									}
 								}
